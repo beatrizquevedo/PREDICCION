@@ -1,0 +1,259 @@
+---
+title: "Modelo Predictivo de los salarios de los jugadores de la NBA"
+author: "Beatriz Quevedo"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    #css: styles.css
+    toc: true
+    toc_float: true
+---
+
+<style>
+#TOC {
+  color: #708090;
+  font-family: Calibri;
+  font-size: 15px;
+  border-color: #708090;
+}
+h1.title {
+  color: #404040;
+  background-color: #F5F5F5;
+  opacity: 0.6;
+  font-family: Calibri;
+  font-size: 40px;
+}
+h4.author {
+  color: #708090;
+  font-family: Calibri;
+}
+h4.date {
+  color: #708090;
+  font-family: Calibri;
+}
+body {
+  color: #708090;
+  font-family: Calibri;
+  background-color: #F5F5F5;
+}
+pre {
+  color: #708090;
+  background-color: #F8F8FF;
+}
+</style>
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.align = 'center', echo = TRUE)
+```
+
+```{r data, include = FALSE}
+
+nba <- read.csv('../data/nba.csv')
+
+library(tidyverse)
+attach(nba)
+library(car)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(MASS)
+library(corrplot)
+library(PerformanceAnalytics)
+library(gvlma)
+
+```
+
+
+##  Variables de nba 
+
+1. _Player_           Nombre del jugador.
+2. _Salary_          Salario del jugador.
+3. _NBA_Country_      Nacionalidad del jugador.
+4. _NBA_DraftNumber_  Número del draft.
+5. _Age_              Edad del jugador.
+6. _Tm_              Abreviatura del equipo
+7. _G_              Partidos jugados.
+8. _MP_              Minutos jugados.
+9. _PER_             Eficiencia de jugador.
+10. _TS._            Porcentaje de tiro.
+11. _X3PAr_           % de triples
+12. _FTr_             % de tiros libres
+13. _ORB._           % Rebotes Ofensivos ganados
+14. _DRB._           % Rebotes defensivos ganados
+15. _TRB._            % Rebotes totales
+16. _AST._           % Asistencia
+17. _STL._           % Robos
+18. _BLK._            % Bloqueos
+19. _TOV._           % Robo previo a tiro
+20. _USG._           % de participacion en jugadas
+21. _OWS_            Acciones en ataque acertadas
+22. _DWS_             Acciones defensivas acertadas
+23. _WS_             Victorias contribuidas
+24. _WS.48_           Ratio de contribución por partido
+25. _OBPM_          +/- rendimiento respecto al equipo (cada 100 jugadas en ataque)
+26. _DBPM_            +/- rendimiento respecto al equipo (cada 100 jugadas en defensa)
+27. _BPM_             +/- rendimiento respecto al equipo (cada 100 posesiones generales)
+28. _VORP_            Valor respecto a jugador involucrado en el cambio
+
+## Tratamiento previo del DataFrame
+
+### Eliminación de los valores nulos, las filas duplicadas y las variables cualitativas.
+
+Se puede apreciar cómo hay ocho valores nulos. Se eliminan las filas mediante na.omit para poder realizar la predicción sin que dichos valores dificulten el proceso.
+```{r}
+na <-sapply(nba, function(nba) sum(is.na(nba)))  
+sum(na)
+
+nba <- na.omit(nba)
+```
+
+Se observa cómo hay dos filas duplicadas pertenecientes al mismo jugador. Por lo tanto, se eliminan para que no den problemas, obteniendo un total de 481 filas. 
+```{r}
+nrow(nba[duplicated(nba$Player), ])
+nrow(nba[!duplicated(nba$Player), ])
+```
+
+Finalmente, se elimina del DataFrame las variables Player, NBA_Country y Tm, ya que son variables cualitativas y no servirán en el estudio, ya que tan solo meterán ruido. 
+
+```{r}
+# nba <- select(nba, -Player, -NBA_Country, -Tm)
+# (Error in select, no soy capaz de solucionarlo)
+```
+
+## Creación del modelo 
+
+Se crea un modelo utilizando como variable dependiente el salario y variables dependientes las restantes del DataFrame, y se obtiene un resumen del resultado.
+```{r}
+model <- lm(Salary ~  NBA_DraftNumber + Age + G + MP + PER + 
+              TS. + X3PAr + FTr + ORB. + DRB. + TRB. + AST. + STL. + 
+              BLK. + TOV. + USG. + OWS + DWS + WS + WS.48 + 
+              OBPM + DBPM + BPM + VORP,
+            data = nba)
+summary(model)
+```
+
+Como resultado vemos que las variables significativas estadísticamente son NBA_DraftNumber, Age, G y MP. Además, el R cuadrado ajustado del 52,42% para esta regresión implica que aproximadamente el 52% de la variación de la variable dependiente Salary se explica por las variables independientes del modelo. Es un valor muy bajo ya que se considera aceptable a partir del 75% como mínimo.
+
+
+## Selección de las variables del nuevo modelo
+
+Mediante la función stepAIC del paquete MASS se seleccionarán las variables del nuevo modelo de regrsión. En este caso, se utilizará el modelo _Backward_ 
+
+```{r}
+stepAIC(model, direction = 'backward')
+```
+De esta manera se obtiene el nuevo modelo, llamado model2, utilizando el último modelo que ofrece la función stepAIC. 
+
+```{r}
+model2 <- lm(formula = Salary ~ NBA_DraftNumber + Age + G + MP + PER + X3PAr + ORB. + TRB. + USG. + WS + OBPM, data = nba)
+summary(model2)
+```
+
+## Multicolinealidad
+
+Para detectar la multicolinealidad de model2 se utilizará el estadistico llamado _variance inflation factor_ o _VIF_. Por regla general, si la raíz cuadrada del _VIF_ es mayor a 2, es un indicador de multicolinealidad.
+```{r}
+vif(model2) 
+```
+
+```{r}
+sqrt(vif(model2)) > 2
+```
+
+Por lo tanto existe un problema de multicolinealidad con las variables PER, G, OBPM, MP y TRB.. Como la variable OBPM es la que tiene un mayor valor, se retira del modelo y se realiza uno nuevo repitiendo este proceso.
+
+```{r}
+model3 <- lm(formula = Salary ~ NBA_DraftNumber + Age + G + MP + PER + 
+               X3PAr + ORB. + TRB. + USG. + WS, data = nba)
+summary(model3)
+```
+Si se comparan las R cuadrado ajustado de model3 y model2, se puede apreciar un decremento de casi el 1% al quitar la variable OBPM. No se considera significante, por lo que se vuelve a aplicar el estadístico _VIF_ para poder determinar si se ha solucionado la multicolinealidad.
+```{r}
+vif(model3)
+sqrt(vif(model3)) > 2
+```
+
+Sigue habiendo multicolinealidad en las variables TRB. y MP, por lo que se vuelve a repetir el proceso eliminando MP, ya que tiene un mayor valor.
+
+```{r}
+model4 <- lm(formula = Salary ~ NBA_DraftNumber + Age + G + 
+               X3PAr + ORB. + TRB. + USG. + WS, data = nba)
+summary(model4)
+```
+El R cuadrado ajustado se ha vuelto a ver reducido, pero sin embargo, si repetimos por última vez la función vif(), se puede observar cómo ya no existe multicolinealidad.
+
+```{r}
+vif(model4)
+sqrt(vif(model4)) > 2
+```
+
+## Normalidad del modelo
+Si la vble dependiente esta distribuida normalmente para un numero 
+fijo de valores predictivos, entonces los valores residuales deberian distribuirse con una media = 0. La normal Q-Q Plot (el gráfico que aparece a continuación) es un plot de probabilidad de los residuos estandarizados contra los valores bajo una supuesta normalidad.
+Se cumple la hipoteses de normalidad si los valores siguen una linea de 45º con los ejes. 
+```{r}
+qqPlot(model4, labels=row.names(nba), id.method="identify",
+       simulate=TRUE, main="Q-Q Plot")
+```
+Por lo tanto, como se puede observar en la gráfica, hay varios valores outliers que pueden estar metiendo ruido y alterando la normalidad.
+
+Se estudiará, por ejemplo, el valor 328. Este valor pertenece a Gordon Hayward, cuyo salario es de 29.727.900$. 
+```{r}
+nba[326,] 
+```
+
+Al realizar la función fitted() se aprecia cómo la función está estimando por debajo el salario que debería obtener Hayward, ya que según el modelo predictivo éste debería ganar 8.045.214.
+```{r}
+fitted(model)[326]
+```
+
+Encontramos un total de 26 outliers.
+
+```{r}
+outliers <- boxplot(nba$Salary)$out
+```
+```{r}
+nba <- nba[-326,]
+nba <- nba[-112,]
+```
+
+Realizando un modelo sin estos outliers, se produce una mejora el R cuadrado ajustado.
+```{r}
+model5 <- lm(formula = Salary ~ NBA_DraftNumber + Age + G + 
+               X3PAr + ORB. + TRB. + USG. + WS, data = nba)
+summary(model5)
+```
+
+## Comparación de los modelos
+
+Mediante el uso de la función BIC() comparamos el primer modelo, _model_ con _model4_.
+```{r}
+BIC(model, model4)
+```
+Como el BIC del último modelo es menor, podemos afirmar que ha mejorado levemente la predicción del primer modelo.
+
+
+## Validación
+
+La finción gvlma() proporciona una validación global de las hipótesis del modelo lineal. 
+```{r}
+validation <- gvlma(model4)
+summary(validation)
+```
+Gracias a esta validación se puede apreciar cómo cumple la hipótesis de heterocedasticidad.
+
+Para finalizar, se realiza un muestreo aleatorio simple del DataFrame.
+```{r}
+set.seed(1234)
+n = 10
+muestreo <- sample(1:nrow(nba), size = n, replace = FALSE)
+nba_muestreo <- nba[muestreo, ]
+nba_muestreo
+```
+Este muestreo es utilizado en un modelo predictivo utilizando _model4_
+```{r}
+nba_salario <- predict(model4, newdata = nba_muestreo)
+nba_salario
+```
+
+Así se puede ver que el modelo tiende a sobreestimar los salarios de los jugadores. Este resultado indica que el modelo no es óptimo para predecir la variable dependiente. 

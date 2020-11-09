@@ -1,0 +1,333 @@
+---
+title: "Salarios NBA (CV y Regularización)"
+author: "Beatriz Quevedo"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Este conjunto de datos se centra en estadísticas avanzadas, que pueden darle una nueva dirección sobre cómo medir el valor de un jugador.
+
+El *objetivo* consiste en utilizar las técnicas de cross validation y regularización para seleccionar el mejor modelo desde un punto de vista predictivo.
+
+
+# Librerías
+
+```{r Libraries and functions, message=FALSE, warning=FALSE}
+library(here)     # comentar
+library(tidyverse)
+library(janitor)  # clean names
+library(skimr)    # beautiful summarize
+library(magrittr) # Pipe operators
+library(rsample)  # data splotting
+library(glmnet)   # implementing regularized regression approaches
+library(dplyr)    # basic data manipulation procedures
+library(ggplot2)  # plotting
+```
+
+
+# Carga de datos
+
+```{r Read Data}
+nba <-  read.csv("../data/nba.csv")
+colnames(nba)
+```
+
+# Tratamiento de las variables
+
+## Renombre de columnas
+
+```{r}
+nba %<>% clean_names()
+colnames(nba)
+```
+
+## Identificación de filas duplicadas
+No hay valores duplicados, por lo que no hace falta eliminar ninguna fila.
+```{r}
+nrow(nba[duplicated(nba), ])
+```
+
+## Identificación de valores nulos
+Confirmamos que hay al menos un valor nulo en el DataFrame.
+```{r}
+any(is.na(nba)) 
+```
+
+En concreto, 8. Como no son muchos, se eliminarán.
+```{r}
+sum(is.na(nba))
+```
+
+```{r}
+nba %<>% drop_na()
+```
+
+## Eliminación de las variables categóricas del DataFrame
+
+```{r}
+
+vcategoricas <- c('player', 'nba_country', 'tm')
+
+nba <- nba  %<>% select_at(vars(-vcategoricas))
+view(nba)
+
+```
+
+
+# Separación de la muestra en dos partes
+
+Las dos submuestrás serán una para el training (70%) y otra para el testing (30%)
+```{r}
+
+set.seed(91120)
+data_split <- initial_split(nba, prob = 0.70, strata = 'salary')
+data_train <- training(data_split)
+data_test  <- testing(data_split)
+
+```
+
+
+# Métodos de contracción
+
+Se ajustará un modelo que contiene todos los _p_ predictores usando técnicas que restringen o regularizan las estimaciones de coeficientes, o equivalentemente, que reduce las estimaciones de coeficientes hacia cero. Estas técnicas son la regresión de cresta (Ridge), el lazo (Lasso) y la red elástica (Elastic Net).
+
+## Regresión de cresta
+
+Como ya se ha dividido la muestra anteriormente, se crean modelos matriciales y vectores respuesta para el training y el testing, descartando a sy vez el itercepto. 
+
+``` {r}
+data_train_x <- model.matrix(salary ~ ., data_train)[, -1]
+data_train_y <- log(data_train$salary)
+
+data_test_x <- model.matrix(salary ~ ., data_test)[, -1]
+data_test_y <- log(data_test$salary)
+```
+
+Para saber la dimensión de la matriz:
+
+```{r}
+dim(data_train_x)
+```
+
+Se aplica la regresión de cresta a los datos de la NBA.
+
+```{r}
+nba_ridge <- glmnet(
+  x = data_train_x,
+  y = data_train_y,
+  alpha = 0
+)
+
+plot(nba_ridge, xvar = "lambda")
+
+```
+
+Se realiza una validación cruzada.
+
+```{r}
+nba_ridge_cv <- cv.glmnet(
+  x = data_train_x,
+  y = data_train_y,
+  alpha = 0
+)
+
+plot(nba_ridge_cv)
+```
+
+Se observa que el mínimo Error Cuadrático Medio (MSE) es 1.1 aproximadamente.
+
+```{r}
+min(nba_ridge_cv$cvm)
+```
+
+El lambda para este mínimo MSE es de 0.13 y su logaritmo -1.98.
+
+```{r}
+nba_ridge_cv$lambda.min
+```
+```{r}
+log(nba_ridge_cv$lambda.min)
+```
+
+
+A su vez, el lambda para el primer error del mínimo MSE es 1.79 y su logaritmo 0.58. 
+
+```{r}
+nba_ridge_cv$cvm[nba_ridge_cv$lambda ==nba_ridge_cv$lambda.1se]
+
+nba_ridge_cv$lambda.1se
+```
+```{r}
+log(nba_ridge_cv$lambda.1se)
+```
+
+Se grafican los datos obtenidos:
+
+```{r}
+plot(nba_ridge, xvar = "lambda") + 
+abline(v = log(nba_ridge_cv$lambda.1se), col = "red", lty = "dashed")
+```
+Finalmente, se obtiene un gráfico en el que se encuentran las 25 variables que más influencian, en el que vemos que la que más influencia con diferencia es _ts_, el porcentaje de tiros reales. Es una medida de la eficiencia de los tiros que tiene en cuenta los tiros de dos puntos, de tres y los tiros libres.
+
+```{r}
+coef(nba_ridge_cv, s = "lambda.1se") %>%
+  broom::tidy() %>%
+  filter(row != "(Intercept)") %>%
+  top_n(25, wt = abs(value)) %>%
+  ggplot(aes(value, reorder(row, value))) +
+  geom_point() +
+  ggtitle("Las 25 variables que más influencian") +
+  xlab("Coeficiente") +
+  ylab(NULL)
+```
+
+## Regresión Lasso 
+
+Aplicando esta regresión a los datos del DataFrame con un alpha igual a 1 (forzando algunos de los coeficientes a 0)  se obtiene el siguiente gráfico:
+
+```{r}
+nba_lasso <- glmnet(
+  x = data_train_x,
+  y = data_train_y,
+  alpha = 1
+)
+
+plot(nba_lasso, xvar = "lambda")
+```
+
+Y realizando la validación cruzada, se obtiene:
+
+```{r}
+nba_lasso_cv <- cv.glmnet(
+  x = data_train_x,
+  y = data_train_y,
+  alpha = 1
+)
+
+plot(nba_lasso_cv)
+```
+
+El lambda para el mínimo MSE es igual a 0.089.
+
+```{r}
+nba_lasso_cv$lambda.min 
+```
+
+Y el lambda para su primer error es 0.226.
+
+```{r}
+nba_lasso_cv$lambda.1se
+```
+
+Graficando (aplicando logaritmos), se obtiene:
+
+```{r}
+plot(nba_lasso, xvar = "lambda") +
+abline(v = log(nba_lasso_cv$lambda.min), col = "red", lty = "dashed") +
+abline(v = log(nba_lasso_cv$lambda.1se), col = "red", lty = "dashed")
+```
+
+La regresión Lasso, a diferencia de Ridge no incluye todos los predictores _p_ en el modelo final. Como se aprecia en el gráfico de las variables influyentes, Lasso considera que estas son (ordenados de mayor a menor) la edad ( _age_ ), las victorias aprotadas por jugador ( _ws_ ), las partidas jugadas ( _g_ ), los minutos jugados ( _mp_ ) y su draft number. 
+
+```{r}
+coef(nba_lasso_cv, s = "lambda.1se") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  ggplot(aes(value, reorder(row, value), color = value > 0)) +
+  geom_point(show.legend = FALSE) +
+  ggtitle("Variables influyentes") +
+  xlab("Coeficiente") +
+  ylab(NULL)
+```
+
+
+## Red Elástica
+
+Por último, esta técnica de penalización incorporta la selección de variables de Lasso y la contracción de predictores correlacionados de Ridge.
+
+```{r}
+lasso    <- glmnet(data_train_x, data_train_y, alpha = 1.0) 
+elastic1 <- glmnet(data_train_x, data_train_y, alpha = 0.25) 
+elastic2 <- glmnet(data_train_x, data_train_y, alpha = 0.75) 
+ridge    <- glmnet(data_train_x, data_train_y, alpha = 0.0)
+
+par(mfrow = c(2, 2), mar = c(6, 4, 6, 2) + 0.1)
+plot(lasso, xvar = "lambda", main = "Lasso (Alpha = 1)\n\n\n")
+plot(elastic1, xvar = "lambda", main = "Elastic Net (Alpha = .25)\n\n\n")
+plot(elastic2, xvar = "lambda", main = "Elastic Net (Alpha = .75)\n\n\n")
+plot(ridge, xvar = "lambda", main = "Ridge (Alpha = 0)\n\n\n")
+
+```
+
+Para elegir el mejor modelo de los 4, se ajustan λ y α. 
+
+```{r}
+
+fold_id <- sample(1:10, size = length(data_train_y), replace=TRUE)
+
+tuning_grid <- tibble::tibble(
+  alpha      = seq(0, 1, by = .1),
+  mse_min    = NA,
+  mse_1se    = NA,
+  lambda_min = NA,
+  lambda_1se = NA
+)
+tuning_grid
+
+```
+Una vez creado el tibble (con 10 alfas, de 0.0 a 0.9 y en intervalos de 0.1) se rellena la tabla y se obtienen los valores de alfa/lambda correspondientes.
+
+```{r}
+for(i in seq_along(tuning_grid$alpha)) {
+  fit <- cv.glmnet(data_train_x, data_train_y, alpha = tuning_grid$alpha[i], foldid = fold_id)
+  tuning_grid$mse_min[i]    <- fit$cvm[fit$lambda == fit$lambda.min]
+  tuning_grid$mse_1se[i]    <- fit$cvm[fit$lambda == fit$lambda.1se]
+  tuning_grid$lambda_min[i] <- fit$lambda.min
+  tuning_grid$lambda_1se[i] <- fit$lambda.1se
+}
+
+tuning_grid
+```
+Parece que el modelo con un MSE mínimo menor es el Lasso, que corresponde al alfa = 1. 
+```{r}
+tuning_grid %>%
+  mutate(se = mse_1se - mse_min) %>%
+  ggplot(aes(alpha, mse_min)) +
+  geom_line(size = 2) +
+  geom_ribbon(aes(ymax = mse_min + se, ymin = mse_min - se), alpha = .25) +
+  ggtitle("MSE ± one standard error")
+```
+Se comprueba en el gráfico que a medida de aumenta el valor de alfa, se reducen los valores del MSE mínimo. Aún así, el error es mínimo para alfa de 0 a 1, por lo que cualquier modelo sería válido. Por tanto, el modelo que se utilizará es el Lasso porque a diferencia del Ridge no coge todas las variables y es más sencillo. 
+
+# Predicción
+
+Haciendo validación cruzada con este modelo se obtiene un MSE mínimo de 1.165 y calculando un modelo de predicción con la parte de la muestra destinada para el testing se obtiene una diferencia media entre la predicción y los valores del testing que se obtiene en el último cálculo. 
+```{r}
+cv_lasso <- cv.glmnet(data_train_x, data_train_y, alpha = 1.0)
+min(cv_lasso$cvm)
+```
+
+
+```{r}
+
+pred <- predict(cv_lasso, s = cv_lasso$lambda.min, data_test_x)
+mean((data_test_y - pred)^2)
+
+```
+
+
+
+
+
+
+
+
+
+
