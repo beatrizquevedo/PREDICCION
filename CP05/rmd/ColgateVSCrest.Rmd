@@ -1,0 +1,221 @@
+---
+title: "Colgate VS Crest"
+author: "Beatriz Quevedo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  prettydoc::html_pretty:
+    theme: hpstr
+    highlight: github
+    toc: yes
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(openxlsx)
+library(skimr)
+library(fpp2)
+library(ggplot2)
+library(zoo)
+library(ggfortify)
+library(tseries)
+require(forecast)
+require(xts)
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(TSA)
+library(Hmisc)
+library(astsa)
+library(tsoutliers)
+library(normtest)
+```
+
+# Introducción
+
+El análisis de intervención proporciona una herramienta que puede ser útil para evaluar el impacto de las iniciativas que la empresa, los competidores o terceros pueden realizar en el mix de mercado. En esta caso práctico, se considerará la lucha por la cuota de mercado entre la crema dental Colgate de Colgate-Palmolive y la crema dental Crest de Procter y Gamble.
+
+
+```{r cars, include=FALSE}
+library(readxl)
+data <- read_excel('../data/data.xlsx')
+```
+
+```{r, include=FALSE}
+data$Date <- as.Date(paste(data$Year, data$Week, 1, sep = "-"), "%Y-%U-%u")
+data <- dplyr::select(data, -Year, -Week)
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+skim(data)
+```
+
+
+```{r, include=FALSE}
+# Separamos los datos tanto de colgate como de Crest.
+
+colgate <- ts(data$Colgate, start = 1958,frequency = 52)
+crest <- ts(data$Crest, start = 1958, frequency = 52)
+```
+
+
+```{r, include=FALSE}
+# Convertimos los datos para poder trabajarlos mejor
+
+colgate.z <- as.zoo(colgate)
+crest.z <- as.zoo(crest)
+
+```
+
+# Grafición de las series
+
+```{r, echo=FALSE}
+autoplot(colgate.z)+ggtitle("COLGATE")+ xlab("Semana") + ylab("Cuota")
+autoplot(crest.z) + ggtitle("CREST") + xlab("Semana") + ylab("Cuota")
+```
+
+Como se puede comprobar en las gráficas, __Colgate__ desde 1960 ha sufrido un decremento de su cuota de mercado, mientras que __Crest__ ha aumentado. 
+
+
+Primero se realizará un test para ver si existe o no estacionariedad. La hipótesis nula será la no estacionariedad de los datos. 
+
+```{r, echo = FALSE, warning = FALSE}
+adf.test(colgate.z)
+adf.test(crest.z)
+```
+
+En ambos casos el p-valor es inferior a 0.05, por lo que se rechaza la hipótesis nula, por lo que se concluye que existe estacionariedad, y por lo tanto, los datos no serán tratados para forzar la estacionariedad.
+
+
+```{r , echo=FALSE}
+cOmit = 16                             
+
+colgate.test = length(colgate.z)
+crest.test = length(crest.z)
+```
+
+
+```{r , echo=FALSE}
+colgate.train = window(colgate.z, start = index(colgate.z[1]),end = index(colgate.z[colgate.test - cOmit]))
+
+crest.train = window(crest.z, star = index(crest.z[1]), end = index(crest.z[crest.test - cOmit]))
+
+```
+
+# Modelo ARIMA 
+
+Para obtener el modelo se utilizará autoarima con una muestra de entrenamiento. 
+
+```{r , echo=FALSE}
+fit.colgate <- auto.arima(colgate.train)
+summary(fit.colgate)
+
+fit.crest <- auto.arima(crest.train)
+summary(fit.crest)
+
+```
+
+En Colgate y en Crest se obtiene un ARIMA de (0,1,1), lo que significa que existe media móvil y una diferenciación regular, pero no hay valores autorregresivos.
+
+# Análisis de los residuos
+
+```{r , echo=FALSE}
+ggtsdisplay(fit.colgate$residuals,
+            main = "Residuos de ARIMA en Colgate") 
+ggtsdisplay(fit.crest$residuals,
+            main = "Residuos de ARIMA en Crest") 
+```
+
+# Prueba de Ljung - Box
+
+Este test es un tipo de prueba estadística que determina si, de un grupo cualquiera de autorrelaciones de una serie de tiempo, son diferentes de cero. 
+
+Su hipótesis nula afirma que los datos se distribuyen de manera independiente. 
+```{r, echo = FALSE}
+Box.test(fit.colgate$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(fit.crest$residuals,lag=4, fitdf=3, type="Lj")
+```
+Como los p-valores se encuentran por encima del nivel de significacion, no se rechaza la independencia de las observaciones.
+
+# Predicción
+
+```{r, echo = FALSE}
+cuota.arima.colgate = forecast(fit.colgate, h = 16)
+cuota.arima.crest = forecast(fit.crest, h = 16)
+```
+
+```{r, echo = FALSE, include= FALSE}
+summary(cuota.arima.colgate)
+summary(cuota.arima.crest)
+```
+
+```{r, echo = FALSE}
+
+plot(cuota.arima.colgate)
+plot(cuota.arima.crest)
+
+```
+
+# Detección de outliers
+
+```{r , echo=FALSE}
+detectAO(fit.colgate) 
+detectAO(fit.crest) 
+detectIO(fit.colgate) 
+detectIO(fit.crest)
+```
+Hay tres outliers: en los puntos 135, 136 y 138. Mientras que el punto 135 muestra el cambio disruptivo en el mercado, los puntos 136 y 138 pueden ser fruto indirecto de este cambio, ya que son fechas muy próximas.
+
+# Modelo ARIMAX
+
+```{r , echo=FALSE, warning = FALSE}
+arimax.colgate <- arimax(as.double(colgate.z), 
+                         order = c(0,1,1),
+                         xtransf = data.frame(A60_step =
+                         1*(seq(colgate.z)),
+                         A60_pulse = 1*(seq(colgate.z))),
+                         transfer = list(c(0,0), c(1,0)),
+                         method = 'ML')
+arimax.colgate
+```
+
+```{r , echo=FALSE, warning=FALSE}
+arimax.crest <- arimax(as.double(crest.z), 
+                       order = c(0,1,1),
+                       xtransf = data.frame(A60_step = 1 * (seq(crest.z) >= 135),
+                       A60_pulse = 1 * (seq(crest.z))),
+                       xreg = data.frame(
+                       A60_3 = 1 * (seq(crest.z) == 136),
+                       A60_3 = 1 * (seq(crest.z) == 138)),
+                       transfer = list(c(0,0), c(0,0)),
+                       method = 'ML')
+arimax.crest
+```
+
+
+```{r , echo=FALSE}
+detectAO(arimax.colgate) 
+detectIO(arimax.colgate) 
+detectAO(arimax.crest)
+detectIO(arimax.crest)
+```
+
+# Función de transferencia
+
+```{r , echo=FALSE}
+transf <- arimax(as.double(colgate.z),
+                 order = c(0,1,1), 
+                 include.mean = TRUE,
+                 xtransf = crest.z, 
+                 transfer = list(c(0,0)), 
+                 method = "ML")
+transf
+summary(transf)
+plot(transf$coef, type = 'h')
+
+```
